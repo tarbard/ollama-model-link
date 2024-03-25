@@ -95,15 +95,6 @@ def pretty(d, indent=0):
       else:
          print('\t' * (indent+1) + str(value))
 
-def sha256sum(filename):
-    h  = hashlib.sha256()
-    b  = bytearray(128*1024)
-    mv = memoryview(b)
-    with open(filename, 'rb', buffering=0) as f:
-        while n := f.readinto(mv):
-            h.update(mv[:n])
-    return h.hexdigest()
-
 def process_file(file_path, blob_dir, publicmodels_dir):
     print(file_path)
     user = file_path.parts[-3].replace('registry.ollama.ai', 'ollama')
