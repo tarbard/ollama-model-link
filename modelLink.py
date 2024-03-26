@@ -1,8 +1,10 @@
-import os
+import os, sys, ctypes
 import json
 from pathlib import Path
 import argparse
-import sys
+import re
+import platform
+from pathlib import Path
 from contextlib import contextmanager
 
 @contextmanager
@@ -16,6 +18,8 @@ def optional_dependencies(error: str = "ignore"):
         if error == "warn":
             msg = f'Missing optional dependency "{e.name}". Use pip or conda to install.'
             print(f'Warning: {msg}')
+        if error == "ignore":
+            pass
 
 hf_hub = 0
 with optional_dependencies("ignore"):
@@ -27,7 +31,7 @@ if bool(hf_hub):
     print("HuggingFace Hub API library found")
 
 parser = argparse.ArgumentParser(description="Create human readable symlinks to Ollama models")
-parser.add_argument('--fromdir', type=str, default="/usr/share/ollama/.ollama/models",
+parser.add_argument('--fromdir', type=str, default="*",
                     help='Base directory where models are stored e.g /usr/share/ollama/.ollama/models')
 parser.add_argument('--to', type=str, default="linkedOllamaModels",
                     help='Directory where model links will be created e.g linkedOllamaModels')
@@ -40,12 +44,39 @@ parser.add_argument('--refresh', action='store_true',
 
 args = parser.parse_args()
 
-base_dir = Path(args.fromdir)
+thisos = platform.system()
+
+def get_platform_path(input_path):
+    if input_path != "*":
+        return input_path
+    else:
+        if thisos == "Windows":
+            return f'{os.environ["USERPROFILE"]}{separator}.ollama{separator}models'
+        elif thisos == "Darwin":
+            return "~/.ollama/models"
+        else:
+            return "/usr/share/ollama/.ollama/models"
+
+def get_platform_separator():
+    if thisos == "Windows":
+        return "\\"
+    return "/"
+
+def get_platform_linktype():
+    if thisos == "Windows":
+        return "hard"
+    return "symbolic"
+    
+linktype = get_platform_linktype()
+separator = get_platform_separator()
+base_dir = Path(get_platform_path(args.fromdir))
 linked_model_location = Path(args.to)
 lms_store = args.lms
 hf_refresh = args.refresh
 hf_store = args.hf
-hf_cache = f'{linked_model_location}/.hf_cache'
+hf_cache = f'{linked_model_location}{separator}.hf_cache'
+if thisos == "Windows":
+    kdll = ctypes.windll.LoadLibrary("kernel32.dll")  
 
 if bool(lms_store) or bool(hf_store):
     if not bool(hf_hub):
@@ -61,8 +92,8 @@ if not base_dir.is_dir():
     print(f"Error: fromdir {base_dir} does not exist.")
     sys.exit(1)
 
-manifest_dir = base_dir / 'manifests' / 'registry.ollama.ai'
-blob_dir = base_dir / 'blobs'
+manifest_dir = Path(f'{base_dir}{separator}manifests{separator}registry.ollama.ai')
+blob_dir = Path(f'{base_dir}{separator}blobs')
 
 def delete_symlinks(directory):
     if not os.path.isdir(directory):
@@ -70,30 +101,56 @@ def delete_symlinks(directory):
         return
 
     for root, dirs, files in os.walk(directory, topdown=True):
+        files_to_remove = []
+        dirs_to_remove = []
         for file in files:
-            if os.path.islink(os.path.join(root, file)):
-                try:
-                    os.remove(os.path.join(root, file))
-                    print(f"Removed symlink: {file}")
-                    files.remove(file)
-                except OSError as e:
-                    print(f"Error removing symlink {file}: {e}")
+            if os.path.islink(os.path.normpath(os.path.join(root, file))) or islink(os.path.normpath(os.path.join(root, file))):
+                try: 
+                    if os.path.islink(os.path.join(root, file)) and thisos == "Windows":
+                        os.chmod(os.path.normpath(os.path.join(root, file)), 0o777)
+                    os.unlink(os.path.normpath(os.path.join(root, file)))
+                    print(f"Removed {linktype} link: {os.path.normpath(os.path.join(root, file))}")
+                except Exception as error: 
+                    print(f"Could not remove existing {linktype} link file: {error}") 
+
+        for file in files_to_remove:
+            files.remove(file)
+
         for dir in dirs:
             delete_symlinks(os.path.join(root, dir))
             if not os.listdir(os.path.join(root, dir)):
                 try:
                     os.rmdir(os.path.join(root, dir))
-                    dirs.remove(dir)
+                    print(f"Removed empty directory: {dir}")
+                    dirs_to_remove.append(dir)
                 except OSError as e:
                     print(f"Error removing empty directory {dir}: {e}")
+        for dir in dirs_to_remove:
+            dirs.remove(dir)
 
 def pretty(d, indent=0):
-   for key, value in d.items():
-      print('\t' * indent + str(key))
-      if isinstance(value, dict):
-         pretty(value, indent+1)
-      else:
-         print('\t' * (indent+1) + str(value))
+    for key, value in d.items():
+        print('\t' * indent + str(key))
+        if isinstance(value, dict):
+            pretty(value, indent+1)
+        else:
+            print('\t' * (indent+1) + str(value) if not isinstance(value, dict) else 'Invalid value')
+
+def is_sha256(check_hash):
+    sha256re = re.compile(r"^[a-f0-9]{64}(:.+)?$", re.IGNORECASE)
+    if sha256re.match(check_hash):
+        return True
+    else:
+        return False    
+
+def islink(filename):
+    try:
+        return os.stat(filename).st_nlink > 1
+    except Exception:
+        return False
+
+def replace_char(s, position, character):
+    return s[:position] + character + s[position+1:]
 
 def process_file(file_path, blob_dir, publicmodels_dir):
     print(file_path)
@@ -103,20 +160,24 @@ def process_file(file_path, blob_dir, publicmodels_dir):
 
     with open(file_path, 'r') as file:
         data = json.load(file)
-
+        
     for layer in data.get('layers', []):
         if layer.get('mediaType') == 'application/vnd.ollama.image.model':
             digest = layer.get('digest')
             hash = digest[7:]
-            print(f"File sha256: {hash}")
+            if is_sha256(hash) == False:
+                print(f"Invalid sha256: {hash}")
+                continue
+            else:       
+                print(f"File sha256: {hash}")
             if bool(hf_store) or bool(lms_store):
                 model_id = False
                 model_author = False
                 model_filename = False
-                model_name = False
                 model_found = False
                 model_id = cached_data.get(hash)
-                if model_id != 0:
+                if model_id != 0 and isinstance(model_id, str):
+                    print(f'Model "{model}:{tag}" metadata found in HF cache')
                     model_author = cached_data.get(f'{hash}_author')
                     model_filename = cached_data.get(f'{hash}_filename')
                 elif model_id == 0 and not bool(hf_refresh):
@@ -124,8 +185,8 @@ def process_file(file_path, blob_dir, publicmodels_dir):
                 else:
                     modelsearch = f'{model} gguf'
                     modelcount = 0
-                    models = hf_api.list_models(search=modelsearch, full=True, cardData=False, sort='downloads', direction=-1)
                     print(f'"{model}:{tag}" not found in cache, searching for "{modelsearch}" on HF...')
+                    models = hf_api.list_models(search=modelsearch, full=True, cardData=False, sort='downloads', direction=-1)
                     for model_item in models:
                         repo_hash = False
                         repo_query = True
@@ -171,14 +232,19 @@ def process_file(file_path, blob_dir, publicmodels_dir):
                 create_symlink(blob_dir, digest, publicmodels_dir, user, model, tag)
 
 def create_symlink_hf(blob_dir, digest, publicmodels_dir, user, model, tag, model_id, model_author, model_filename, lms):
-    source = blob_dir / digest
+    if thisos == "Windows":
+        digest2 = replace_char(digest, 6, '-')
+    else:
+        digest2 = digest
+    source = f'{blob_dir}{separator}{digest2}'
+
     this_author = model_author
     this_filename = model_filename
     this_id = model_id
 
     if model_id == 0:
         if user == 'library':
-            this_author = 'oolama-ai'
+            this_author = 'ollama-ai'
             this_filename = f'{model}-{tag}.gguf'
         else:
             this_author = f'{user}'
@@ -186,31 +252,55 @@ def create_symlink_hf(blob_dir, digest, publicmodels_dir, user, model, tag, mode
         this_id = f'{this_author}/{model}'
 
     if bool(lms):
-        if not os.path.exists( publicmodels_dir / this_author ):
-            os.makedirs( publicmodels_dir / this_author )
-        if not os.path.exists( publicmodels_dir / this_id ):
-            os.makedirs( publicmodels_dir / this_id )
-        destination = publicmodels_dir / this_id / this_filename
+        if not os.path.exists( f'{publicmodels_dir}{separator}{this_author}' ):
+            os.makedirs( f'{publicmodels_dir}{separator}{this_author}' )
+        if not os.path.exists( f'{publicmodels_dir}{separator}{this_id}' ):
+            os.makedirs( f'{publicmodels_dir}{separator}{this_id}' )
+        destination = Path(f'{publicmodels_dir}{separator}{this_id}{separator}{this_filename}')
     else:
-        destination = publicmodels_dir / f'{this_author}-{this_filename}'
+        destination = Path(f'{publicmodels_dir}{separator}{this_author}-{this_filename}')
 
-    if os.path.isfile(destination) or os.path.islink(destination):
-        os.remove(destination)
-    destination.symlink_to(source)
-    print(f"Created link of {user} - {model}:{tag} at {destination}")
+    if os.path.islink(os.path.normpath(destination)) or islink(os.path.normpath(destination)):
+        try: 
+            os.unlink(os.path.normpath(destination))
+        except Exception as error: 
+            print(f"Could not remove existing link file: {error}") 
+
+    try: 
+        if thisos == "Windows":
+            os.link( os.path.normpath(source), os.path.normpath(destination) )
+        else:
+            destination.symlink_to(source)
+        print(f"Created {linktype} link of {user} - {model}:{tag} at {os.path.normpath(destination)} (From source: {os.path.normpath(source)})")
+    except OSError as error: 
+        print(f"Could not create a {linktype} link to the model: {error}") 
 
 def create_symlink(blob_dir, digest, publicmodels_dir, user, model, tag):
-    source = blob_dir / digest
-    if user == "library":
-        destination = publicmodels_dir / f"{model}-{tag}.gguf"
+    if thisos == "Windows":
+        digest2 = replace_char(digest, 6, '-')
     else:
-        destination = publicmodels_dir / f"{user}-{model}-{tag}.gguf"
+        digest2 = digest
+    source = f'{blob_dir}{separator}{digest2}'
 
-    if os.path.isfile(destination) or os.path.islink(destination):
-        os.remove(destination)
-    destination.symlink_to(source)
-    print(f"Created link of {user} - {model}:{tag} at {destination}")
+    if user == "library":
+        destination = Path(f"{publicmodels_dir}{separator}{model}-{tag}.gguf")
+    else:
+        destination = Path(f"{publicmodels_dir}{separator}{user}-{model}-{tag}.gguf")
 
+    if os.path.islink(os.path.normpath(destination)) or islink(os.path.normpath(destination)):
+        try: 
+            os.unlink(os.path.normpath(destination))
+        except Exception as error: 
+            print(f"Could not remove existing link file: {error}") 
+
+    try: 
+        if thisos == "Windows":
+            os.link( os.path.normpath(source), os.path.normpath(destination) )
+        else:
+            destination.symlink_to(source)
+        print(f"Created {linktype} link of {user} - {model}:{tag} at {os.path.normpath(destination)} (From source: {os.path.normpath(source)})")
+    except OSError as error: 
+        print(f"Could not create a {linktype} link to the model: {error}") 
 
 linked_model_location.mkdir(parents=True, exist_ok=True)
 delete_symlinks(linked_model_location)
@@ -220,6 +310,6 @@ for file_path in manifest_dir.glob('**/*'):
     if file_path.is_file() and len(file_path.parts) - len(manifest_dir.parts) == 3:
         process_file(file_path, blob_dir, linked_model_location)
 
-if bool(hf_store) or bool(lms_store):
+if (bool(hf_store) or bool(lms_store)) and bool(hf_hub):
     with open(hf_cache, 'w') as hfc:
         json.dump(cached_data, hfc)

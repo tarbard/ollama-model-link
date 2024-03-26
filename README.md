@@ -14,6 +14,7 @@ This script, named `modelLink.py`, is designed to iterate through Ollama model f
 
 - Python 3.9 or later.
 - Access to the filesystem where Ollama models are stored.
+- Hugging Face API library: `pip install huggingface_hub`
 
 ## Installation
 
@@ -33,3 +34,9 @@ python modelLink.py [--fromdir PATH_TO_MODELS] [--to PATH_FOR_SYMLINKS] [--hf] [
 
 ### Work in progress
 uploaded in case it's useful to others.
+
+### ChangeLog
+
+v0.2:
+- Added support for automatic default paths for Linux, MacOS and Windows
+- Added support for Windows using hard links
