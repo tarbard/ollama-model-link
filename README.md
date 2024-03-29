@@ -42,6 +42,7 @@ uploaded in case it's useful to others.
 v0.3:
 - Added `--cleanup` and `--version` arguments
 - Detection of model path using `OLLAMA_MODELS` environment variable
+
 v0.2:
 - Added support for automatic default paths for Linux, MacOS and Windows
 - Added support for Windows using hard links
