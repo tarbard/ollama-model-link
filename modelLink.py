@@ -21,41 +21,49 @@ def optional_dependencies(error: str = "ignore"):
         if error == "ignore":
             pass
 
+s_version = "0.3"
+
 hf_hub = 0
 with optional_dependencies("ignore"):
     from huggingface_hub import HfApi
     hf_api = HfApi()
     hf_hub = 1
 
-if bool(hf_hub):
-    print("HuggingFace Hub API library found")
-
-parser = argparse.ArgumentParser(description="Create human readable symlinks to Ollama models")
+parser = argparse.ArgumentParser(description=f"Create human readable symlinks or hardlinks to Ollama models [v{s_version}]")
 parser.add_argument('--fromdir', type=str, default="*",
                     help='Base directory where models are stored e.g /usr/share/ollama/.ollama/models')
 parser.add_argument('--to', type=str, default="linkedOllamaModels",
                     help='Directory where model links will be created e.g linkedOllamaModels')
 parser.add_argument('--lms', action='store_true',
-                    help='Enable creating symlinks in LM Studio format, the HuggingFace Hub API library must be installed')
+                    help='Enable creating links in LM Studio format, the HuggingFace Hub API library must be installed')
 parser.add_argument('--hf', action='store_true',
-                    help='Enable creating symlinks using HF filenames, the HuggingFace Hub API library must be installed')
-parser.add_argument('--refresh', action='store_true',
+                    help='Enable creating links using HF filenames, the HuggingFace Hub API library must be installed')
+parser.add_argument('-r', '--refresh', action='store_true',
                     help='Lookup again all models cached as not availabe on HF, the HuggingFace Hub API library must be installed')
+parser.add_argument('--cleanup', action='store_true',
+                    help='Clean the existing links and exit')
+parser.add_argument('-v', '--version', action='store_true',
+                    help='Print the script version')
 
 args = parser.parse_args()
+
+if  bool(args.version):
+    print(f"modelLink script version v{s_version}")
+    sys.exit(0)
 
 thisos = platform.system()
 
 def get_platform_path(input_path):
     if input_path != "*":
-        return input_path
+        models_path = input_path
     else:
         if thisos == "Windows":
-            return f'{os.environ["USERPROFILE"]}{separator}.ollama{separator}models'
+            models_path = f'{os.environ["USERPROFILE"]}{separator}.ollama{separator}models'
         elif thisos == "Darwin":
-            return "~/.ollama/models"
+            models_path = "~/.ollama/models"
         else:
-            return "/usr/share/ollama/.ollama/models"
+            models_path = "/usr/share/ollama/.ollama/models"
+    return os.path.normpath(os.environ.get('OLLAMA_MODELS', models_path))
 
 def get_platform_separator():
     if thisos == "Windows":
@@ -71,6 +79,7 @@ linktype = get_platform_linktype()
 separator = get_platform_separator()
 base_dir = Path(get_platform_path(args.fromdir))
 linked_model_location = Path(args.to)
+cleanup = args.cleanup
 lms_store = args.lms
 hf_refresh = args.refresh
 hf_store = args.hf
@@ -79,7 +88,9 @@ if thisos == "Windows":
     kdll = ctypes.windll.LoadLibrary("kernel32.dll")  
 
 if bool(lms_store) or bool(hf_store):
-    if not bool(hf_hub):
+    if bool(hf_hub):
+        print("HuggingFace Hub API library found")
+    else:
         print(f"Error: --hf and --lms options needs the HuggingFace Hub API library. Use pip or conda to install.")
         sys.exit(1)
     cached_data = {}
@@ -304,6 +315,9 @@ def create_symlink(blob_dir, digest, publicmodels_dir, user, model, tag):
 
 linked_model_location.mkdir(parents=True, exist_ok=True)
 delete_symlinks(linked_model_location)
+
+if bool(cleanup):
+    sys.exit(0)
 
 for file_path in manifest_dir.glob('**/*'):
     print(f"Looking at {file_path}")
